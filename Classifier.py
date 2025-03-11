@@ -6,16 +6,13 @@ from transformers import DistilBertTokenizer, DistilBertForSequenceClassificatio
 from datasets import load_dataset
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
-from torch.nn.functional import cross_entropy
 
 # Check for GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
-# Load dataset (Huggingface SMS Spam Dataset)
+# Load dataset
 dataset = load_dataset("sms_spam")
-
-# Extract texts and labels
 texts = [d['sms'] for d in dataset['train']]
 labels = [1 if d['label'] == 'spam' else 0 for d in dataset['train']]
 
@@ -25,7 +22,7 @@ train_texts, test_texts, train_labels, test_labels = train_test_split(texts, lab
 # Load tokenizer
 tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
 
-# Tokenization function
+# Tokenize texts
 def tokenize(texts, labels):
     encoding = tokenizer(texts, truncation=True, padding=True, max_length=512, return_tensors='pt')
     return encoding['input_ids'], encoding['attention_mask'], torch.tensor(labels)
@@ -85,7 +82,7 @@ def train(model, train_loader, optimizer, criterion, epochs=1):
 
             loop.set_postfix(loss=loss.item())
 
-# Train model (1 epoch for demonstration)
+# Train model
 train(model, train_loader, optimizer, criterion, epochs=1)
 
 # Evaluation function
@@ -110,49 +107,55 @@ def evaluate(model, test_loader):
 # Evaluate the model
 evaluate(model, test_loader)
 
-# Hotflip Gradient-Based Attack
-def hotflip_gradient_attack(model, tokenizer, text, label):
-    model.eval()
-    
-    # Tokenize input
-    encoding = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=512)
-    input_ids = encoding['input_ids'].to(device)
-    attention_mask = encoding['attention_mask'].to(device)
+# Function to identify the most important word
+def get_most_important_word(input_ids, attention_mask, label):
+    input_ids = input_ids.unsqueeze(0).to(device)  
+    attention_mask = attention_mask.unsqueeze(0).to(device)
     label = torch.tensor([label]).to(device)
 
-    # Get input embeddings
-    input_embeddings = model.get_input_embeddings()(input_ids)
-    input_embeddings.retain_grad()
+    # Get embeddings
+    embeddings = model.get_input_embeddings()(input_ids)
+
+    # Fix: Clone embeddings to make it a leaf variable and enable gradients
+    embeddings = embeddings.clone().detach().requires_grad_(True)
 
     # Forward pass
-    outputs = model(inputs_embeds=input_embeddings, attention_mask=attention_mask)
-    loss = cross_entropy(outputs.logits, label)
+    outputs = model(inputs_embeds=embeddings, attention_mask=attention_mask)
+    loss = criterion(outputs.logits, label)
+
+    # Compute gradients
     loss.backward()
 
-    # Gradients of embeddings
-    grads = input_embeddings.grad  # Shape: (1, seq_len, embed_dim)
+    # Compute importance score for each token
+    gradients = embeddings.grad.abs().sum(dim=-1).squeeze()
+    important_idx = gradients.argmax().item()  # Find most important token index
 
-    # Find the most sensitive token (highest gradient norm)
-    grad_norms = grads.norm(dim=2).squeeze()  # Norm along embedding dimension
-    most_sensitive_idx = grad_norms.argmax().item()
+    return important_idx
 
-    # Get the original tokens
-    tokens = tokenizer.convert_ids_to_tokens(input_ids.squeeze().tolist())
+# Function to perform hotflip attack by replacing most important word
+def hotflip_attack(text, model, tokenizer):
+    encoding = tokenizer(text, truncation=True, padding=True, max_length=512, return_tensors='pt')
+    input_ids = encoding['input_ids'].squeeze(0)
+    attention_mask = encoding['attention_mask'].squeeze(0)
 
-    print(f"Most sensitive token: '{tokens[most_sensitive_idx]}' at position {most_sensitive_idx}")
+    # Dummy label (not used for actual classification)
+    label = torch.tensor(0)
 
-    # Example: flip this token to some random token (or use smarter techniques like nearest neighbors)
-    # For demonstration, replace with 'UNK'
-    tokens[most_sensitive_idx] = '[UNK]'
+    # Get most important token index
+    important_idx = get_most_important_word(input_ids, attention_mask, label)
 
-    # Reconstruct perturbed text
+    # Convert token IDs back to words
+    tokens = tokenizer.convert_ids_to_tokens(input_ids.tolist())
+
+    # Replace the most influential token with "car"
+    tokens[important_idx] = "car"
+
+    # Convert tokens back to text
     perturbed_text = tokenizer.convert_tokens_to_string(tokens)
-    print(f"Original Text: {text}")
-    print(f"Perturbed Text: {perturbed_text}")
 
     return perturbed_text
 
-# Example usage of Hotflip attack
-sample_text = "Congratulations! You have won a lottery. Click here to claim your prize."
-sample_label = 1  # Spam
-perturbed_text = hotflip_gradient_attack(model, tokenizer, sample_text, sample_label)
+# Example
+sample_text = "Congratulations! You have won a free lottery ticket."
+print("Original:", sample_text)
+print("Perturbed:", hotflip_attack(sample_text, model, tokenizer))

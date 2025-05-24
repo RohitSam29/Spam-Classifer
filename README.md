@@ -6,7 +6,7 @@ Final Year Academic Project =>
 
 Team members =>
   1. Rohit Samanta 
-  2. Pramit Kumar Bose
+  2. Pramit Bose
   3. Kumarjit Chanda
   4. Sovan Sen 
   5. Subham Das
